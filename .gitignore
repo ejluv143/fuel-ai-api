@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+*.pkl
+*.log
+.env
+venv/
+.idea/
+.vscode/
+build/
+.dart_tool/
