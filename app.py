@@ -3,14 +3,18 @@ import joblib
 import numpy as np
 import pandas as pd
 from flask_cors import CORS
+import os
 
 app = Flask(__name__)
 CORS(app)
 
 # -----------------------------
-# LOAD MODEL
+# LOAD MODEL (FIXED FOR RENDER)
 # -----------------------------
-data = joblib.load("fuel_efficiency_model.pkl")
+BASE_DIR = os.path.dirname(__file__)
+MODEL_PATH = os.path.join(BASE_DIR, "fuel_efficiency_model.pkl")
+
+data = joblib.load(MODEL_PATH)
 model = data["model"]
 feature_names = data["features"]
 
@@ -47,11 +51,8 @@ def home():
 # -----------------------------
 @app.route("/predict", methods=["POST"])
 def predict():
-
     try:
-        req = request.get_json(force=True, silent=True) or {}
-
-        print("REQUEST RECEIVED:", req)  # ✅ DEBUG HERE
+        req = request.get_json(force=True) or {}
 
         distance = safe_float(req.get("distance"))
         speed = safe_float(req.get("speed"))
