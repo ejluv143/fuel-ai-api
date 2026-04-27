@@ -1,144 +1,219 @@
 import numpy as np
 import pandas as pd
+from datetime import datetime, timedelta
 
 np.random.seed(42)
-n = 1000
 
 # -----------------------------
-# REAL FUEL CONSUMPTION RANGE (km/L)
+# LOCATIONS
 # -----------------------------
-fuel_efficiency_range = {
-    110: (50, 70),
-    125: (45, 55),
-    150: (35, 60),
-    155: (40, 48),
-    160: (40, 50),
-    200: (30, 45)
+city_routes = [
+    (14.5995, 120.9842),  # Manila
+    (10.3157, 123.8854),  # Cebu
+    (7.1907, 125.4553)    # Davao
+]
+
+# -----------------------------
+# ENGINE CONFIG
+# -----------------------------
+cc_list = [110, 125, 150, 160, 200]
+cc_weights = [0.4, 0.25, 0.15, 0.1, 0.1]
+
+speed_limits = {
+    110: 85,
+    125: 100,
+    150: 115,
+    160: 125,
+    200: 140
 }
 
 # -----------------------------
-# REAL TOP SPEED RANGE (km/h)
+# TIME STEP
 # -----------------------------
-top_speed_range = {
-    110: (80, 95),
-    125: (96, 112),
-    150: (90, 120),
-    155: (111, 122),
-    160: (110, 135),
-    200: (115, 140)
+SEC = 5
+
+# -----------------------------
+# PHYSICS CONSTANTS
+# -----------------------------
+AIR_DENSITY = 1.225
+DRAG_COEFF = 0.9
+FRONTAL_AREA = 0.6
+
+# -----------------------------
+# REAL IDLE FUEL (L/hr)
+# -----------------------------
+idle_fuel_map = {
+    110: (0.15, 0.30),
+    125: (0.20, 0.50),
+    150: (0.14, 0.25),
+    160: (0.14, 0.30),
+    200: (0.50, 1.20)
 }
 
-cc_list = [110, 125, 150, 155, 160, 200]
+# -----------------------------
+# HELPERS
+# -----------------------------
+def choose_trip_type():
+    return np.random.choice(["city", "mixed", "long"], p=[0.5, 0.3, 0.2])
 
-rows = []
+def gps_noise():
+    return np.random.normal(0, 0.00002)
 
-for i in range(n):
+def sensor_noise(x, scale=0.03):
+    return x + np.random.normal(0, scale * max(abs(x), 1))
 
-    distance = np.random.randint(5, 120)
-    load = np.random.randint(60, 250)
-    engine_cc = np.random.choice(cc_list)
-
-    # -----------------------------
-    # BIKE PHYSICS PARAMETERS
-    # -----------------------------
-    min_ts, max_ts = top_speed_range[engine_cc]
-    bike_top_speed = np.random.uniform(min_ts, max_ts)
-
-    min_fe, max_fe = fuel_efficiency_range[engine_cc]
-    base_efficiency = np.random.uniform(min_fe, max_fe)
-
-    time_steps = np.random.randint(30, 120)
-
-    speed_series = []
-    current_speed = np.random.randint(20, 50)
-
-    for t in range(time_steps):
-
-        change = np.random.normal(0, 6)
-
-        # cruising behavior
-        if current_speed < bike_top_speed * 0.6:
-            change += 2
-        elif current_speed > bike_top_speed * 0.85:
-            change -= 3
-
-        current_speed += change
-        current_speed = max(0, min(current_speed, bike_top_speed))
-
-        if np.random.rand() < 0.04:
-            current_speed = np.random.randint(0, 8)
-
-        speed_series.append(current_speed)
-
-    speed_series = np.array(speed_series)
-
-    # -----------------------------
-    # FEATURES
-    # -----------------------------
-    avg_speed = np.mean(speed_series)
-    max_speed = np.max(speed_series)
-    speed_std = np.std(speed_series)
-    idle_time = np.sum(speed_series < 5)
-
-    accel = np.diff(speed_series)
-    accel_intensity = np.mean(np.abs(accel)) if len(accel) > 0 else 0
-
-    # -----------------------------
-    # PHYSICS-BASED FUEL MODEL
-    # -----------------------------
-
-    optimal_speed = bike_top_speed * 0.6
-
-    # speed efficiency curve
-    speed_deviation = abs(avg_speed - optimal_speed) / bike_top_speed
-    speed_factor = np.exp(-speed_deviation * 2)
-
-    # nonlinear drag (v².5 effect)
-    drag_ratio = avg_speed / bike_top_speed
-    drag_penalty = (drag_ratio ** 2.5) * 10
-
-    # stop-go + stress
-    idle_penalty = idle_time * 0.02
-    accel_penalty = accel_intensity * 0.04
-    load_penalty = max(0, (load - 100) * 0.012)
-
-    # final efficiency
-    efficiency = base_efficiency * (0.55 + 0.45 * speed_factor)
-
-    efficiency -= drag_penalty
-    efficiency -= idle_penalty
-    efficiency -= accel_penalty
-    efficiency -= load_penalty
-
-    efficiency = np.clip(efficiency, 8, 80)
-
-    fuel_used = distance / efficiency
-
-    # -----------------------------
-    # STORE ROW
-    # -----------------------------
-    rows.append({
-        "distance": distance,
-        "avg_speed": avg_speed,
-        "max_speed": max_speed,
-        "speed_std": speed_std,
-        "idle_time": idle_time,
-        "accel_intensity": accel_intensity,
-        "load": load,
-        "engine_cc": engine_cc,
-        "bike_top_speed": bike_top_speed,
-        "fuel_efficiency_km_l": efficiency,
-        "fuel_used": fuel_used
-    })
 
 # -----------------------------
-# DATAFRAME OUTPUT
+# TRIP GENERATOR
 # -----------------------------
-df = pd.DataFrame(rows)
-df.to_csv("motorcycle_physics_dataset.csv", index=False)
+def generate_trip(trip_id):
 
-print("✅ Physics-based dataset created!")
+    trip_type = choose_trip_type()
+
+    base_lat, base_lon = city_routes[np.random.randint(len(city_routes))]
+    lat = base_lat + np.random.normal(0, 0.002)
+    lon = base_lon + np.random.normal(0, 0.002)
+
+    engine_cc = np.random.choice(cc_list, p=cc_weights)
+    max_speed = speed_limits[engine_cc]
+
+    speed = np.random.uniform(10, 30)
+    prev_speed = speed
+
+    bearing = np.random.uniform(0, 360)
+    time = datetime.now()
+
+    total_distance = 0
+    points = []
+
+    load = np.random.uniform(50, 150)
+
+    # -----------------------------
+    # SAFE STEP SELECTION (FIXED)
+    # -----------------------------
+    if trip_type == "city":
+        steps = np.random.randint(80, 180)
+    elif trip_type == "mixed":
+        steps = np.random.randint(150, 300)
+    else:
+        steps = np.random.randint(300, 600)
+
+    # -----------------------------
+    # IDLE FUEL PER STEP
+    # -----------------------------
+    idle_low, idle_high = idle_fuel_map.get(engine_cc, (0.2, 0.4))
+    idle_lph = np.random.uniform(idle_low, idle_high)
+    idle_per_step = (idle_lph / 3600) * SEC
+
+    for _ in range(steps):
+
+        # -----------------------------
+        # DRIVER BEHAVIOR
+        # -----------------------------
+        accel = np.random.normal(0, 3)
+
+        if trip_type == "city":
+            accel += np.random.normal(0, 2)
+            stop_prob = 0.08
+        elif trip_type == "mixed":
+            accel += np.random.normal(0, 1)
+            stop_prob = 0.04
+        else:
+            accel += np.random.normal(0.5, 1)
+            stop_prob = 0.02
+
+        speed += accel
+        speed = np.clip(speed, 0, max_speed)
+
+        # random stop
+        if np.random.rand() < stop_prob:
+            speed = np.random.uniform(0, 5)
+
+        # -----------------------------
+        # PHYSICS (DRAG)
+        # -----------------------------
+        speed_mps = speed / 3.6
+        drag_force = 0.5 * AIR_DENSITY * DRAG_COEFF * FRONTAL_AREA * speed_mps**2
+
+        # -----------------------------
+        # DISTANCE (FIXED)
+        # -----------------------------
+        raw_step_km = (speed * SEC) / 3600
+
+        # apply noise
+        step_km = sensor_noise(raw_step_km, 0.05)
+
+        # 🔥 prevent fake zero movement
+        if speed > 1:
+            step_km = max(step_km, raw_step_km * 0.5)
+
+        step_km = max(step_km, 0)
+
+        total_distance += step_km
+
+        # -----------------------------
+        # GPS MOVEMENT
+        # -----------------------------
+        lat += (step_km * np.cos(np.radians(bearing))) / 111 + gps_noise()
+        lon += (step_km * np.sin(np.radians(bearing))) / (111 * np.cos(np.radians(lat))) + gps_noise()
+
+        bearing += np.random.normal(0, 5)
+        bearing %= 360
+
+        # -----------------------------
+        # FUEL MODEL
+        # -----------------------------
+        accel_factor = abs(speed - prev_speed)
+
+        fuel_rate = (
+            engine_cc * 0.0003 +
+            drag_force * 0.00005 +
+            accel_factor * 0.002 +
+            load * 0.0002
+        )
+
+        # APPLY REAL IDLE FUEL
+        if speed < 5:
+            fuel_rate += idle_per_step
+
+        fuel_rate += np.random.normal(0, 0.003)
+        fuel_rate = max(fuel_rate, 0.005)
+
+        prev_speed = speed
+
+        # -----------------------------
+        # STORE
+        # -----------------------------
+        points.append({
+            "trip_id": trip_id,
+            "timestamp": time.isoformat(),
+            "lat": lat,
+            "lon": lon,
+            "speed": speed,
+            "engine_cc": engine_cc,
+            "fuel_rate": fuel_rate,
+            "distance": total_distance,
+            "load": load,
+            "trip_type": trip_type
+        })
+
+        time += timedelta(seconds=SEC)
+
+    return points
+
+
+# -----------------------------
+# GENERATE DATASET
+# -----------------------------
+all_data = []
+
+for t in range(500):
+    all_data.extend(generate_trip(t))
+
+df = pd.DataFrame(all_data)
+
+df.to_csv("gps_mixed_fleet_dataset.csv", index=False)
+
+print("✅ FINAL REALISTIC GPS FLEET CREATED")
+print(df["trip_type"].value_counts())
 print(df.head())
-
-print("\n📊 Summary:")
-print(df.describe())

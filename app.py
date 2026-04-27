@@ -9,13 +9,16 @@ app = Flask(__name__)
 CORS(app)
 
 # -----------------------------
-# LOAD MODEL (FIXED FOR RENDER)
+# LOAD MODEL
 # -----------------------------
 BASE_DIR = os.path.dirname(__file__)
-MODEL_PATH = os.path.join(BASE_DIR, "fuel_efficiency_model.pkl")
+MODEL_PATH = os.path.join(BASE_DIR, "best_fuel_model.pkl")
 
 data = joblib.load(MODEL_PATH)
+
 model = data["model"]
+model_name = data.get("name", "LinearRegression")
+transform = data.get("transform", None)
 feature_names = data["features"]
 
 # -----------------------------
@@ -23,7 +26,7 @@ feature_names = data["features"]
 # -----------------------------
 def safe_float(v):
     try:
-        return float(v) if v is not None else 0.0
+        return float(v)
     except:
         return 0.0
 
@@ -44,13 +47,17 @@ MAX_SPEED = {
 # -----------------------------
 @app.route("/", methods=["GET"])
 def home():
-    return jsonify({"status": "API running 🚀"})
+    return jsonify({
+        "status": "API running 🚀",
+        "model": model_name
+    })
 
 # -----------------------------
 # PREDICT ROUTE
 # -----------------------------
 @app.route("/predict", methods=["POST"])
 def predict():
+
     try:
         req = request.get_json(force=True) or {}
 
@@ -62,7 +69,7 @@ def predict():
         max_limit = MAX_SPEED.get(engine_cc, 120)
 
         # -----------------------------
-        # SIMULATED PROFILE
+        # SIMULATED SPEED PROFILE
         # -----------------------------
         time_steps = 60
         current_speed = speed
@@ -82,33 +89,57 @@ def predict():
         # -----------------------------
         # FEATURES
         # -----------------------------
-        avg_speed = np.mean(speed_series)
-        max_speed = np.max(speed_series)
-        speed_std = np.std(speed_series)
-        idle_time = np.sum(speed_series < 5)
-
-        accel = np.diff(speed_series)
-        accel_intensity = np.mean(np.abs(accel)) if len(accel) > 0 else 0
-
-        # -----------------------------
-        # MODEL INPUT
-        # -----------------------------
         input_dict = {
             "distance": distance,
-            "avg_speed": avg_speed,
-            "max_speed": max_speed,
-            "speed_std": speed_std,
-            "idle_time": idle_time,
-            "accel_intensity": accel_intensity,
+            "avg_speed": np.mean(speed_series),
+            "max_speed": np.max(speed_series),
+            "speed_std": np.std(speed_series),
+            "idle_time": np.sum(speed_series < 5),
+            "accel_intensity": np.mean(np.abs(np.diff(speed_series))) if len(speed_series) > 1 else 0,
             "load": load,
             "engine_cc": engine_cc
         }
 
-        features = pd.DataFrame([input_dict])[feature_names]
+        X = pd.DataFrame([input_dict])
 
-        prediction = model.predict(features)[0]
+        # ensure correct column order
+        X = X[feature_names]
+
+        # -----------------------------
+        # APPLY TRANSFORMATION SAFELY
+        # -----------------------------
+        if transform is not None:
+
+            if isinstance(transform, dict):
+                scaler = transform.get("scaler", None)
+                poly = transform.get("poly", None)
+
+                if poly:
+                    X = poly.transform(X)
+
+                if scaler:
+                    X = scaler.transform(X)
+
+            else:
+                # fallback (old format list/tuple)
+                if len(transform) == 2:
+                    scaler = transform[1]
+                    X = scaler.transform(X)
+
+                elif len(transform) == 3:
+                    poly = transform[1]
+                    scaler = transform[2]
+
+                    X = poly.transform(X)
+                    X = scaler.transform(X)
+
+        # -----------------------------
+        # PREDICTION
+        # -----------------------------
+        prediction = model.predict(X)[0]
 
         return jsonify({
+            "model": model_name,
             "predicted_fuel": round(float(prediction), 3)
         })
 
@@ -116,6 +147,7 @@ def predict():
         return jsonify({
             "error": str(e)
         }), 400
+
 
 # -----------------------------
 # RUN SERVER
